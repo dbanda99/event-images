@@ -107,12 +107,16 @@
                 const repo = params.get('repo');
                 const token = params.get('token');
 
+                console.log('URL Params:', { eventId, owner, repo, token: token ? 'present' : 'missing' });
+
                 if (eventId && owner && repo && token) {
                     // Guest mode - directly load the event gallery
+                    console.log('Guest mode activated');
                     setIsGuest(true);
-                    setConfig({ owner, repo, token });
+                    const guestConfig = { owner, repo, token };
+                    setConfig(guestConfig);
                     setView('gallery');
-                    loadEventForGuest(eventId, { owner, repo, token });
+                    loadEventForGuest(eventId, guestConfig);
                 } else {
                     // Admin mode - check for saved config
                     const saved = localStorage.getItem('github-config');
