@@ -79,6 +79,13 @@
             </svg>
         );
 
+        const RefreshCw = () => (
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+        );
+
         const GITHUB_API = 'https://api.github.com';
 
         function EventPhotoApp() {
@@ -90,24 +97,33 @@
             const [loading, setLoading] = useState(false);
             const [newEventName, setNewEventName] = useState('');
             const [uploading, setUploading] = useState(false);
+            const [isGuest, setIsGuest] = useState(false);
 
             useEffect(() => {
-                const saved = localStorage.getItem('github-config');
-                if (saved) {
-                    const parsed = JSON.parse(saved);
-                    setConfig(parsed);
-                    setView('create');
-                    loadEvents(parsed);
-                }
-            }, []);
-
-            useEffect(() => {
+                // Check if this is a guest visiting via QR code
                 const params = new URLSearchParams(window.location.search);
                 const eventId = params.get('event');
-                if (eventId && config.token) {
-                    loadEvent(eventId);
+                const owner = params.get('owner');
+                const repo = params.get('repo');
+                const token = params.get('token');
+
+                if (eventId && owner && repo && token) {
+                    // Guest mode - directly load the event gallery
+                    setIsGuest(true);
+                    setConfig({ owner, repo, token });
+                    setView('gallery');
+                    loadEventForGuest(eventId, { owner, repo, token });
+                } else {
+                    // Admin mode - check for saved config
+                    const saved = localStorage.getItem('github-config');
+                    if (saved) {
+                        const parsed = JSON.parse(saved);
+                        setConfig(parsed);
+                        setView('create');
+                        loadEvents(parsed);
+                    }
                 }
-            }, [config]);
+            }, []);
 
             const saveConfig = () => {
                 localStorage.setItem('github-config', JSON.stringify(config));
@@ -127,10 +143,16 @@
                             }
                         }
                     );
-                    const data = await response.json();
-                    setEvents(data);
+                    if (response.ok) {
+                        const data = await response.json();
+                        setEvents(Array.isArray(data) ? data : []);
+                    } else {
+                        console.error('Failed to load events');
+                        setEvents([]);
+                    }
                 } catch (error) {
                     console.error('Error loading events:', error);
+                    setEvents([]);
                 }
                 setLoading(false);
             };
@@ -193,9 +215,42 @@
                         }
                     );
                     const comments = await commentsResponse.json();
-                    const photoComments = comments.filter(c => c.body.includes('![photo]'));
+                    const photoComments = comments.filter(c => c.body && c.body.includes('![photo]'));
                     setPhotos(photoComments);
                     setView('gallery');
+                } catch (error) {
+                    console.error('Error loading event:', error);
+                }
+                setLoading(false);
+            };
+
+            const loadEventForGuest = async (eventId, cfg) => {
+                setLoading(true);
+                try {
+                    const eventResponse = await fetch(
+                        `${GITHUB_API}/repos/${cfg.owner}/${cfg.repo}/issues/${eventId}`,
+                        {
+                            headers: {
+                                'Authorization': `token ${cfg.token}`,
+                                'Accept': 'application/vnd.github.v3+json'
+                            }
+                        }
+                    );
+                    const event = await eventResponse.json();
+                    setCurrentEvent(event);
+
+                    const commentsResponse = await fetch(
+                        `${GITHUB_API}/repos/${cfg.owner}/${cfg.repo}/issues/${eventId}/comments`,
+                        {
+                            headers: {
+                                'Authorization': `token ${cfg.token}`,
+                                'Accept': 'application/vnd.github.v3+json'
+                            }
+                        }
+                    );
+                    const comments = await commentsResponse.json();
+                    const photoComments = comments.filter(c => c.body && c.body.includes('![photo]'));
+                    setPhotos(photoComments);
                 } catch (error) {
                     console.error('Error loading event:', error);
                 }
@@ -211,7 +266,7 @@
                     reader.onload = async (e) => {
                         const base64 = e.target.result;
                         
-                        await fetch(
+                        const response = await fetch(
                             `${GITHUB_API}/repos/${config.owner}/${config.repo}/issues/${currentEvent.number}/comments`,
                             {
                                 method: 'POST',
@@ -226,24 +281,43 @@
                             }
                         );
                         
-                        loadEvent(currentEvent.number);
+                        if (response.ok) {
+                            if (isGuest) {
+                                const params = new URLSearchParams(window.location.search);
+                                loadEventForGuest(params.get('event'), config);
+                            } else {
+                                loadEvent(currentEvent.number);
+                            }
+                        } else {
+                            alert('Failed to upload photo');
+                        }
+                        setUploading(false);
                     };
                     reader.readAsDataURL(file);
                 } catch (error) {
                     console.error('Error uploading photo:', error);
                     alert('Failed to upload photo');
+                    setUploading(false);
                 }
-                setUploading(false);
             };
 
-            const generateQRUrl = (eventNumber) => {
+            const generateGuestUrl = (eventNumber) => {
                 const baseUrl = window.location.origin + window.location.pathname;
-                return `${baseUrl}?event=${eventNumber}`;
+                return `${baseUrl}?event=${eventNumber}&owner=${config.owner}&repo=${config.repo}&token=${config.token}`;
             };
 
             const generateQRCode = (eventNumber) => {
-                const url = generateQRUrl(eventNumber);
+                const url = generateGuestUrl(eventNumber);
                 return `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(url)}`;
+            };
+
+            const refreshGallery = () => {
+                if (isGuest) {
+                    const params = new URLSearchParams(window.location.search);
+                    loadEventForGuest(params.get('event'), config);
+                } else if (currentEvent) {
+                    loadEvent(currentEvent.number);
+                }
             };
 
             if (view === 'setup') {
@@ -313,7 +387,16 @@
                     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 p-4">
                         <div className="max-w-4xl mx-auto pt-8">
                             <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
-                                <h1 className="text-3xl font-bold mb-6">Your Events</h1>
+                                <div className="flex justify-between items-center mb-6">
+                                    <h1 className="text-3xl font-bold">Your Events</h1>
+                                    <button
+                                        onClick={() => loadEvents(config)}
+                                        className="text-purple-600 hover:text-purple-700 flex items-center gap-2"
+                                    >
+                                        <RefreshCw />
+                                        Refresh
+                                    </button>
+                                </div>
                                 
                                 <div className="flex gap-3 mb-8">
                                     <input
@@ -340,7 +423,7 @@
                                     </div>
                                 ) : events.length === 0 ? (
                                     <div className="text-center py-12 text-gray-500">
-                                        <ImageIcon />
+                                        <div className="flex justify-center mb-4"><ImageIcon /></div>
                                         <p>No events yet. Create your first event above!</p>
                                     </div>
                                 ) : (
@@ -393,7 +476,7 @@
                                 <div className="bg-purple-50 rounded-xl p-6 mb-6">
                                     <h2 className="font-semibold mb-4 flex items-center gap-2">
                                         <QrCode />
-                                        Share this QR Code
+                                        Share this QR Code with Guests
                                     </h2>
                                     <div className="bg-white p-4 rounded-lg inline-block">
                                         <img
@@ -403,10 +486,10 @@
                                         />
                                     </div>
                                     <p className="text-sm text-gray-600 mt-4">
-                                        Guests scan this QR code to upload photos to your event gallery
+                                        Guests scan this QR code to instantly access the photo gallery and upload photos
                                     </p>
                                     <div className="mt-3 p-3 bg-white rounded border text-xs break-all">
-                                        {generateQRUrl(currentEvent.number)}
+                                        {generateGuestUrl(currentEvent.number)}
                                     </div>
                                 </div>
 
@@ -415,7 +498,7 @@
                                     className="w-full bg-blue-500 text-white py-3 rounded-lg font-semibold hover:bg-blue-600 transition flex items-center justify-center gap-2"
                                 >
                                     <Grid />
-                                    View Gallery ({photos.length} photos)
+                                    View Gallery
                                 </button>
                             </div>
                         </div>
@@ -427,17 +510,30 @@
                 return (
                     <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 p-4">
                         <div className="max-w-6xl mx-auto pt-8">
-                            <button
-                                onClick={() => setView('event')}
-                                className="mb-4 text-purple-600 hover:text-purple-700 flex items-center gap-2"
-                            >
-                                <ArrowLeft />
-                                Back to Event
-                            </button>
+                            {!isGuest && (
+                                <button
+                                    onClick={() => setView('event')}
+                                    className="mb-4 text-purple-600 hover:text-purple-700 flex items-center gap-2"
+                                >
+                                    <ArrowLeft />
+                                    Back to Event
+                                </button>
+                            )}
                             
                             <div className="bg-white rounded-2xl shadow-xl p-8">
-                                <h1 className="text-3xl font-bold mb-2">{currentEvent.title}</h1>
-                                <p className="text-gray-600 mb-6">{photos.length} photos</p>
+                                <div className="flex justify-between items-start mb-6">
+                                    <div>
+                                        <h1 className="text-3xl font-bold mb-2">{currentEvent.title}</h1>
+                                        <p className="text-gray-600">{photos.length} photos</p>
+                                    </div>
+                                    <button
+                                        onClick={refreshGallery}
+                                        className="text-purple-600 hover:text-purple-700 flex items-center gap-2"
+                                    >
+                                        <RefreshCw />
+                                        Refresh
+                                    </button>
+                                </div>
                                 
                                 <div className="mb-6">
                                     <label className="block w-full">
@@ -448,16 +544,17 @@
                                                     <p className="text-purple-600 font-medium">Uploading...</p>
                                                 </div>
                                             ) : (
-                                                <>
+                                                <div className="flex flex-col items-center">
                                                     <Upload />
-                                                    <p className="text-lg font-semibold text-purple-600">Click to Upload Photo</p>
+                                                    <p className="text-lg font-semibold text-purple-600 mt-2">Click to Upload Photo</p>
                                                     <p className="text-sm text-gray-500 mt-1">or drag and drop</p>
-                                                </>
+                                                </div>
                                             )}
                                         </div>
                                         <input
                                             type="file"
                                             accept="image/*"
+                                            capture="environment"
                                             onChange={(e) => uploadPhoto(e.target.files[0])}
                                             className="hidden"
                                             disabled={uploading}
@@ -471,7 +568,7 @@
                                     </div>
                                 ) : photos.length === 0 ? (
                                     <div className="text-center py-12 text-gray-500">
-                                        <ImageIcon />
+                                        <div className="flex justify-center mb-4"><ImageIcon /></div>
                                         <p>No photos yet. Be the first to upload!</p>
                                     </div>
                                 ) : (
